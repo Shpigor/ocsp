@@ -1,29 +1,23 @@
-package main
+package responder
 
 import (
-	"bufio"
 	"bytes"
 	"crypto"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
-	"encoding/pem"
 	"errors"
-	"flag"
 	"fmt"
 	"golang.org/x/crypto/ocsp"
-	"io/ioutil"
 	"log"
-	"math/big"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 )
 
 type OCSPResponder struct {
-	IndexFile    string
+	Im           *IndexManager
 	RespKeyFile  string
 	RespCertFile string
 	CaCertFile   string
@@ -33,32 +27,17 @@ type OCSPResponder struct {
 	Port         int
 	Address      string
 	Ssl          bool
-	IndexEntries []IndexEntry
-	IndexModTime time.Time
 	CaCert       *x509.Certificate
 	RespCert     *x509.Certificate
 	NonceList    [][]byte
 }
 
-func Responder() *OCSPResponder {
-	return &OCSPResponder{
-		IndexFile:    "/Users/shpigor/ca/index.txt",
-		RespKeyFile:  "/Users/shpigor/ca/responder.key",
-		RespCertFile: "/Users/shpigor/ca/responder.crt",
-		CaCertFile:   "/Users/shpigor/ca/ca-cert.crt",
-		LogFile:      "/Users/shpigor/ca/responder.log",
-		LogToStdout:  false,
-		Strict:       false,
-		Port:         8888,
-		Address:      "",
-		Ssl:          false,
-		IndexEntries: nil,
-		IndexModTime: time.Time{},
-		CaCert:       nil,
-		RespCert:     nil,
-		NonceList:    nil,
-	}
-}
+// I only know of two types, but more can be added later
+const (
+	StatusValid   = 'V'
+	StatusRevoked = 'R'
+	StatusExpired = 'E'
+)
 
 func (self *OCSPResponder) makeHandler() func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -103,125 +82,6 @@ func (self *OCSPResponder) makeHandler() func(w http.ResponseWriter, r *http.Req
 	}
 }
 
-// I only know of two types, but more can be added later
-const (
-	StatusValid   = 'V'
-	StatusRevoked = 'R'
-	StatusExpired = 'E'
-)
-
-type IndexEntry struct {
-	Status byte
-	Serial *big.Int // wow I totally called it
-	// revocation reason may need to be added
-	IssueTime         time.Time
-	RevocationTime    time.Time
-	DistinguishedName string
-}
-
-// function to parse the index file
-func (self *OCSPResponder) parseIndex() error {
-	var t string = "060102150405Z"
-	finfo, err := os.Stat(self.IndexFile)
-	if err == nil {
-		// if the file modtime has changed, then reload the index file
-		if finfo.ModTime().After(self.IndexModTime) {
-			log.Print("Index has changed. Updating")
-			self.IndexModTime = finfo.ModTime()
-			// clear index entries
-			self.IndexEntries = self.IndexEntries[:0]
-		} else {
-			// the index has not changed. just return
-			return nil
-		}
-	} else {
-		return err
-	}
-
-	// open and parse the index file
-	if file, err := os.Open(self.IndexFile); err == nil {
-		defer file.Close()
-		s := bufio.NewScanner(file)
-		for s.Scan() {
-			var ie IndexEntry
-			ln := strings.Fields(s.Text())
-			ie.Status = []byte(ln[0])[0]
-			ie.IssueTime, _ = time.Parse(t, ln[1])
-			if ie.Status == StatusValid {
-				ie.Serial, _ = new(big.Int).SetString(ln[2], 16)
-				ie.DistinguishedName = ln[4]
-				ie.RevocationTime = time.Time{} //doesn't matter
-			} else if ie.Status == StatusRevoked {
-				ie.Serial, _ = new(big.Int).SetString(ln[3], 16)
-				ie.DistinguishedName = ln[5]
-				ie.RevocationTime, _ = time.Parse(t, ln[2])
-			} else {
-				// invalid status or bad line. just carry on
-				continue
-			}
-			self.IndexEntries = append(self.IndexEntries, ie)
-		}
-	} else {
-		return err
-	}
-	return nil
-}
-
-// updates the index if necessary and then searches for the given index in the
-// index list
-func (self *OCSPResponder) getIndexEntry(s *big.Int) (*IndexEntry, error) {
-	log.Println(fmt.Sprintf("Looking for serial 0x%x", s))
-	if err := self.parseIndex(); err != nil {
-		return nil, err
-	}
-	for _, ent := range self.IndexEntries {
-		if ent.Serial.Cmp(s) == 0 {
-			return &ent, nil
-		}
-	}
-	return nil, errors.New(fmt.Sprintf("Serial 0x%x not found", s))
-}
-
-// parses a pem encoded x509 certificate
-func parseCertFile(filename string) (*x509.Certificate, error) {
-	ct, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-	block, _ := pem.Decode(ct)
-	cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return nil, err
-	}
-	return cert, nil
-}
-
-// parses a PEM encoded PKCS8 private key (RSA only)
-func parseKeyFile(filename string) (interface{}, error) {
-	kt, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-	block, _ := pem.Decode(kt)
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, err
-	}
-	return key, nil
-}
-
-// takes a list of extensions and returns the nonce extension if it is present
-func checkForNonceExtension(exts []pkix.Extension) *pkix.Extension {
-	nonce_oid := asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 7, 48, 1, 2}
-	for _, ext := range exts {
-		if ext.Id.Equal(nonce_oid) {
-			log.Println("Detected nonce extension")
-			return &ext
-		}
-	}
-	return nil
-}
-
 func (self *OCSPResponder) verifyIssuer(req *ocsp.Request) error {
 	h := req.HashAlgorithm.New()
 	h.Write(self.CaCert.RawSubject)
@@ -262,7 +122,7 @@ func (self *OCSPResponder) verify(rawReq []byte) ([]byte, error) {
 	}
 
 	// get the index entry, if it exists
-	ent, err := self.getIndexEntry(req.SerialNumber)
+	ent, err := self.Im.getIndexEntry(req.SerialNumber)
 	if err != nil {
 		log.Println(err)
 		status = ocsp.Unknown
@@ -350,20 +210,4 @@ func (self *OCSPResponder) Serve() error {
 		http.ListenAndServe(listenOn, nil)
 	}
 	return nil
-}
-
-func main() {
-	resp := Responder()
-	flag.StringVar(&resp.IndexFile, "index", resp.IndexFile, "CA index filename")
-	flag.StringVar(&resp.CaCertFile, "cacert", resp.CaCertFile, "CA certificate filename")
-	flag.StringVar(&resp.RespCertFile, "rcert", resp.RespCertFile, "responder certificate filename")
-	flag.StringVar(&resp.RespKeyFile, "rkey", resp.RespKeyFile, "responder key filename")
-	flag.StringVar(&resp.LogFile, "logfile", resp.LogFile, "file to log to")
-	flag.StringVar(&resp.Address, "bind", resp.Address, "bind address")
-	flag.IntVar(&resp.Port, "port", resp.Port, "listening port")
-	flag.BoolVar(&resp.Ssl, "ssl", resp.Ssl, "use SSL, this is not widely supported and not recommended")
-	flag.BoolVar(&resp.Strict, "strict", resp.Strict, "require content type HTTP header")
-	flag.BoolVar(&resp.LogToStdout, "stdout", resp.LogToStdout, "log to stdout, not the log file")
-	flag.Parse()
-	resp.Serve()
 }

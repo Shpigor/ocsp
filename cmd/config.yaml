@@ -1,0 +1,28 @@
+responder:
+  port: 8080
+  private_key: "/home/igor/ca/responder.pk",
+  cert_file: "/home/igor/ca/responder.crt",
+  ca_cert: "/home/igor/ca/ca-cert.crt",
+  log_file: "/home/igor/ca/responder.log",
+  logT_to_stdout: false,
+  strict: false,
+  address: "",
+  ssl: false,
+ca_config:
+  organization: "Corinex, INC."
+  country: "CA"
+  province: "BC"
+  locality: "Vancouver"
+  street_address: ""
+  postal_code: ""
+index_file_path: "/home/igor/ca/index.txt"
+cert_path: "/home/igor/ca"
+cert_type: ""
+key_bits: 2048
+clients:
+  - dns: "client"
+    ip: "10.0.0.81"
+  - dns: "server"
+    ip: "10.0.0.81"
+  - dns: "responder"
+    ip: "10.0.0.81"

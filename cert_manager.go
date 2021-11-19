@@ -1,4 +1,4 @@
-package main
+package responder
 
 import (
 	"bytes"
@@ -14,7 +14,6 @@ import (
 	"time"
 )
 
-const defaultPath = "/Users/shpigor/ca"
 const caCertPrefix = "ca-cert"
 const caKeyPrefix = "ca-key"
 const crtFileExt = ".crt"
@@ -22,66 +21,40 @@ const pkFileExt = ".pk"
 
 const defaultPkBits = 2048
 
-var certName = pkix.Name{
-	Organization:  []string{"Corinex, INC."},
-	Country:       []string{"CA"},
-	Province:      []string{"BC"},
-	Locality:      []string{"Vancouver"},
-	StreetAddress: []string{""},
-	PostalCode:    []string{""},
+type CertManager struct {
+	indexManager *IndexManager
+	certPool     *x509.CertPool
+	caCert       *x509.Certificate
+	caPrivateKey *rsa.PrivateKey
+	certName     pkix.Name
+	certPath     string
 }
 
-var config = KeyConfig{
-	KeyBits:       defaultPkBits,
-	IndexFilePath: "/Users/shpigor/ca/index.txt",
-	Clients: []ClientEntry{
-		{
-			Dns:      "client",
-			Ip:       "10.0.0.1",
-			FilePath: defaultPath,
-		},
-		{
-			Dns:      "nginx",
-			Ip:       "10.0.0.2",
-			FilePath: defaultPath,
-		},
-		{
-			Dns:      "responder",
-			Ip:       "10.0.0.3",
-			FilePath: defaultPath,
-		},
-	},
-}
-
-var certPool *x509.CertPool
-var caPrivateKey *rsa.PrivateKey
-var caCert *x509.Certificate
-var indexManager *IndexManager
-
-func init() {
-	certPool = x509.NewCertPool()
+func NewCertManager(config *Config) *CertManager {
 	manager, err := InitIndexManager(config.IndexFilePath)
 	if err != nil {
 		log.Fatalf("got error while init index manager")
 	}
-	indexManager = manager
-}
-func main() {
-	generateCACertAndKey()
-
-	for _, entry := range config.Clients {
-		err, _, _ := genAndSignCert(entry.Dns, []net.IP{net.ParseIP(entry.Ip)}, caPrivateKey, caCert)
-		if err != nil {
-			log.Printf("got error while generating cert: %+v", err)
-		}
+	return &CertManager{
+		indexManager: manager,
+		certPool:     x509.NewCertPool(),
+		certName: pkix.Name{
+			Organization:  []string{config.Ca.Organization},
+			Country:       []string{config.Ca.Country},
+			Province:      []string{config.Ca.Province},
+			Locality:      []string{config.Ca.Locality},
+			StreetAddress: []string{config.Ca.StreetAddress},
+			PostalCode:    []string{config.Ca.PostalCode},
+		},
+		certPath: config.CertPath,
 	}
 }
 
-func generateCACertAndKey() (*bytes.Buffer, *bytes.Buffer) {
+func (cm *CertManager) GenerateCACertAndKey() (*bytes.Buffer, *bytes.Buffer) {
 	var err error
-	caCert = &x509.Certificate{
+	cm.caCert = &x509.Certificate{
 		SerialNumber:          big.NewInt(time.Now().UnixMicro()),
-		Subject:               certName,
+		Subject:               cm.certName,
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().AddDate(10, 0, 0),
 		IsCA:                  true,
@@ -90,24 +63,24 @@ func generateCACertAndKey() (*bytes.Buffer, *bytes.Buffer) {
 		BasicConstraintsValid: true,
 	}
 
-	caPrivateKey, err = rsa.GenerateKey(rand.Reader, defaultPkBits)
+	cm.caPrivateKey, err = rsa.GenerateKey(rand.Reader, defaultPkBits)
 	if err != nil {
 		log.Fatalf("got error while generating CA private key: %+v", err)
 	}
 
-	caBytes, err := x509.CreateCertificate(rand.Reader, caCert, caCert, &caPrivateKey.PublicKey, caPrivateKey)
+	caBytes, err := x509.CreateCertificate(rand.Reader, cm.caCert, cm.caCert, &cm.caPrivateKey.PublicKey, cm.caPrivateKey)
 	if err != nil {
 		log.Fatalf("got error while generating CA certificate: %+v", err)
 	}
 
-	err, caCertPEM := storeCertToFile(defaultPath, caCertPrefix, caBytes, caCert)
+	err, caCertPEM := cm.storeCertToFile(cm.certPath, caCertPrefix, caBytes, cm.caCert)
 	if err != nil {
 		log.Fatalf("got error while encoding CA certificate: %+v", err)
 		return nil, nil
 	}
-	certPool.AppendCertsFromPEM(caCertPEM.Bytes())
+	cm.certPool.AppendCertsFromPEM(caCertPEM.Bytes())
 
-	err, caPrivateKeyPEM := storePkToFile(defaultPath, caKeyPrefix, caPrivateKey)
+	err, caPrivateKeyPEM := cm.storePkToFile(cm.certPath, caKeyPrefix, cm.caPrivateKey)
 	if err != nil {
 		log.Fatalf("got error while encoding CA private key: %+v", err)
 		return nil, nil
@@ -115,10 +88,10 @@ func generateCACertAndKey() (*bytes.Buffer, *bytes.Buffer) {
 	return caCertPEM, caPrivateKeyPEM
 }
 
-func genAndSignCert(dns string, ips []net.IP, caPrivateKey *rsa.PrivateKey, caCert *x509.Certificate) (error, *bytes.Buffer, *bytes.Buffer) {
+func (cm *CertManager) GenAndSignCert(path, dns string, ips []net.IP) (error, *bytes.Buffer, *bytes.Buffer) {
 	cert := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixMicro()),
-		Subject:      certName,
+		Subject:      cm.certName,
 		IPAddresses:  ips,
 		DNSNames:     []string{dns},
 		NotBefore:    time.Now(),
@@ -133,23 +106,25 @@ func genAndSignCert(dns string, ips []net.IP, caPrivateKey *rsa.PrivateKey, caCe
 		return err, nil, nil
 	}
 
-	certBytes, err := x509.CreateCertificate(rand.Reader, cert, caCert, &certPrivateKey.PublicKey, caPrivateKey)
+	certBytes, err := x509.CreateCertificate(rand.Reader, cert, cm.caCert, &certPrivateKey.PublicKey, cm.caPrivateKey)
 	if err != nil {
 		return err, nil, nil
 	}
-
-	err, certPEM := storeCertToFile(defaultPath, dns, certBytes, cert)
+	if len(path) == 0 {
+		path = cm.certPath
+	}
+	err, certPEM := cm.storeCertToFile(path, dns, certBytes, cert)
 	if err != nil {
 		return err, nil, nil
 	}
-	err, certPrivateKeyPEM := storePkToFile(defaultPath, dns, certPrivateKey)
+	err, certPrivateKeyPEM := cm.storePkToFile(path, dns, certPrivateKey)
 	if err != nil {
 		return err, nil, nil
 	}
 	return nil, certPEM, certPrivateKeyPEM
 }
 
-func storeCertToFile(path, prefix string, data []byte, cert *x509.Certificate) (error, *bytes.Buffer) {
+func (cm *CertManager) storeCertToFile(path, prefix string, data []byte, cert *x509.Certificate) (error, *bytes.Buffer) {
 	certPEM := new(bytes.Buffer)
 	err := pem.Encode(certPEM, &pem.Block{
 		Type:  "CERTIFICATE",
@@ -174,11 +149,11 @@ func storeCertToFile(path, prefix string, data []byte, cert *x509.Certificate) (
 			log.Printf("got error while close the file: %v", err)
 		}
 	}(file)
-	indexManager.addCertToIndex(cert, fullFileName)
+	cm.indexManager.addCertToIndex(cert, fullFileName)
 	return nil, certPEM
 }
 
-func storePkToFile(path, prefix string, key *rsa.PrivateKey) (error, *bytes.Buffer) {
+func (cm *CertManager) storePkToFile(path, prefix string, key *rsa.PrivateKey) (error, *bytes.Buffer) {
 	certPrivateKeyPEM := new(bytes.Buffer)
 	err := pem.Encode(certPrivateKeyPEM, &pem.Block{
 		Type:  "RSA PRIVATE KEY",
@@ -202,8 +177,4 @@ func storePkToFile(path, prefix string, key *rsa.PrivateKey) (error, *bytes.Buff
 		}
 	}(file)
 	return nil, certPrivateKeyPEM
-}
-
-func createFile(name string) (*os.File, error) {
-	return os.Create(name)
 }
