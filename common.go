@@ -69,7 +69,7 @@ func parseKeyFile(filename string) (interface{}, error) {
 		return nil, err
 	}
 	block, _ := pem.Decode(kt)
-	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
 		return nil, err
 	}

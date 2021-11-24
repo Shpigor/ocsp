@@ -14,8 +14,6 @@ import (
 
 const indexFileDateFormat = "060201150405Z"
 
-var t string = "060102150405Z"
-
 type IndexManager struct {
 	filePath     string
 	indexFile    *os.File
@@ -59,7 +57,7 @@ func (im *IndexManager) addCertToIndex(cert *x509.Certificate, filePath string) 
 	if len(certPath) <= 0 {
 		certPath = "unknown"
 	}
-	line := fmt.Sprintf("V\t%s\t%X\t%s\t%s\n", cert.NotAfter.Format(indexFileDateFormat), cert.SerialNumber, certPath, cert.DNSNames)
+	line := fmt.Sprintf("V\t%s\t\t%X\t%s\t%s\n", cert.NotAfter.Format(indexFileDateFormat), cert.SerialNumber, certPath, cert.DNSNames)
 	_, err := im.indexFile.WriteString(line)
 	if err != nil {
 		log.Printf("got error while storing data to the index file: %+v", err)
@@ -90,7 +88,7 @@ func (im *IndexManager) parseIndex() error {
 		var ie IndexEntry
 		ln := strings.Fields(s.Text())
 		ie.Status = []byte(ln[0])[0]
-		ie.IssueTime, _ = time.Parse(t, ln[1])
+		ie.IssueTime, _ = time.Parse(indexFileDateFormat, ln[1])
 		if ie.Status == StatusValid {
 			ie.Serial, _ = new(big.Int).SetString(ln[2], 16)
 			ie.DistinguishedName = ln[4]
@@ -98,7 +96,7 @@ func (im *IndexManager) parseIndex() error {
 		} else if ie.Status == StatusRevoked {
 			ie.Serial, _ = new(big.Int).SetString(ln[3], 16)
 			ie.DistinguishedName = ln[5]
-			ie.RevocationTime, _ = time.Parse(t, ln[2])
+			ie.RevocationTime, _ = time.Parse(indexFileDateFormat, ln[2])
 		} else {
 			// invalid status or bad line. just carry on
 			continue

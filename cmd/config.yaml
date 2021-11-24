@@ -1,12 +1,12 @@
 responder:
-  port: 8080
+  port: 7777
   private_key: "/home/igor/ca/responder.pk"
   cert_file: "/home/igor/ca/responder.crt"
   ca_cert: "/home/igor/ca/ca-cert.crt"
   log_file: "/home/igor/ca/responder.log"
   log_to_stdout: false
   strict: false
-  address: ""
+  address: "10.0.0.81"
   ssl: false
 ca_config:
   organization: "Corinex, INC."
