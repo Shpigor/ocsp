@@ -17,16 +17,16 @@ const indexFileDateFormat = "060201150405Z"
 type IndexManager struct {
 	filePath     string
 	indexFile    *os.File
-	IndexEntries []IndexEntry
+	IndexEntries map[string]*IndexEntry
 	IndexModTime time.Time
 }
 
 type IndexEntry struct {
-	Status byte
-	Serial *big.Int // wow I totally called it
-	// revocation reason may need to be added
-	IssueTime         time.Time
+	Status            byte
+	ExpirationTime    time.Time
 	RevocationTime    time.Time
+	Serial            *big.Int
+	Location          string
 	DistinguishedName string
 }
 
@@ -41,8 +41,9 @@ func InitIndexManager(filePath string) (*IndexManager, error) {
 		return nil, err
 	}
 	return &IndexManager{
-		filePath:  filePath,
-		indexFile: indexFile,
+		filePath:     filePath,
+		indexFile:    indexFile,
+		IndexEntries: make(map[string]*IndexEntry),
 	}, nil
 }
 
@@ -73,7 +74,7 @@ func (im *IndexManager) parseIndex() error {
 			log.Print("Index has changed. Updating")
 			im.IndexModTime = finfo.ModTime()
 			// clear index entries
-			im.IndexEntries = im.IndexEntries[:0]
+			im.IndexEntries = make(map[string]*IndexEntry)
 		} else {
 			// the index has not changed. just return
 			return nil
@@ -85,23 +86,21 @@ func (im *IndexManager) parseIndex() error {
 	// open and parse the index file
 	s := bufio.NewScanner(im.indexFile)
 	for s.Scan() {
-		var ie IndexEntry
-		ln := strings.Fields(s.Text())
-		ie.Status = []byte(ln[0])[0]
-		ie.IssueTime, _ = time.Parse(indexFileDateFormat, ln[1])
-		if ie.Status == StatusValid {
-			ie.Serial, _ = new(big.Int).SetString(ln[2], 16)
-			ie.DistinguishedName = ln[4]
-			ie.RevocationTime = time.Time{} //doesn't matter
-		} else if ie.Status == StatusRevoked {
-			ie.Serial, _ = new(big.Int).SetString(ln[3], 16)
-			ie.DistinguishedName = ln[5]
-			ie.RevocationTime, _ = time.Parse(indexFileDateFormat, ln[2])
+		ie := &IndexEntry{}
+		line := strings.Split(s.Text(), "\t")
+		lineColumns := len(line)
+		if lineColumns == 6 {
+			ie.Status = []byte(line[0])[0]
+			ie.ExpirationTime, _ = time.Parse(indexFileDateFormat, line[1])
+			ie.RevocationTime, _ = time.Parse(indexFileDateFormat, line[2])
+			ie.Serial, _ = new(big.Int).SetString(line[3], 16)
+			ie.Location = line[4]
+			ie.DistinguishedName = line[5]
+			im.IndexEntries[line[3]] = ie
 		} else {
-			// invalid status or bad line. just carry on
-			continue
+			message := fmt.Sprintf("Invalid index file format, expected columns number 6 but received:%d", lineColumns)
+			return errors.New(message)
 		}
-		im.IndexEntries = append(im.IndexEntries, ie)
 	}
 	return nil
 }
@@ -113,10 +112,9 @@ func (im *IndexManager) getIndexEntry(s *big.Int) (*IndexEntry, error) {
 	if err := im.parseIndex(); err != nil {
 		return nil, err
 	}
-	for _, ent := range im.IndexEntries {
-		if ent.Serial.Cmp(s) == 0 {
-			return &ent, nil
-		}
+	ent, ok := im.IndexEntries[fmt.Sprintf("%X", s)]
+	if ok {
+		return ent, nil
 	}
 	return nil, errors.New(fmt.Sprintf("Serial 0x%x not found", s))
 }
